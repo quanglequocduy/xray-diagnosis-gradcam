@@ -6,10 +6,12 @@ import cv2
 from PIL import Image
 import cloudinary.uploader
 import os
+import uuid
+import gc
 from torchvision.models.resnet import ResNet50_Weights
 from torchvision.models.densenet import DenseNet121_Weights
 
-# Config Cloudinary
+# Cloudinary config
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -30,12 +32,14 @@ transform = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
-
 def get_model(model_name):
     if model_name == "resnet50_v1" or model_name == "resnet50_v2":
         weights = ResNet50_Weights.DEFAULT
         model = models.resnet50(weights=weights)
-        model.fc = torch.nn.Linear(model.fc.in_features, 2)  # Binary classification
+        model.fc = torch.nn.Sequential(
+            torch.nn.Dropout(0.3),
+            torch.nn.Linear(model.fc.in_features, 2)
+        )
     elif model_name == "densenet121":
         weights = DenseNet121_Weights.DEFAULT
         model = models.densenet121(weights=weights)
@@ -45,7 +49,7 @@ def get_model(model_name):
         )
     else:
         raise ValueError(f"Unknown model: {model_name}")
-
+    
     model.load_state_dict(torch.load(MODEL_PATHS[model_name], map_location="cpu"))
     model.eval()
     return model
@@ -66,16 +70,16 @@ def generate_gradcam(image_path, model_name):
 
     # Define hooks
     def backward_hook(module, grad_input, grad_output):
-        gradients.append(grad_output[0])
+        gradients.append(grad_output[0].detach())
 
     def forward_hook(module, input, output):
-        activations.append(output)
+        activations.append(output.detach())
 
     # Register hooks
-    target_layer.register_forward_hook(forward_hook)
-    target_layer.register_backward_hook(backward_hook)
+    forward_handle = target_layer.register_forward_hook(forward_hook)
+    backward_handle = target_layer.register_backward_hook(backward_hook)
 
-    # Forward pass
+    # Forward pass (no torch.no_grad() here!)
     output = model(input_tensor)
     class_idx = output.argmax(dim=1).item()
 
@@ -83,6 +87,10 @@ def generate_gradcam(image_path, model_name):
     model.zero_grad()
     class_score = output[0, class_idx]
     class_score.backward()
+
+    # Clean up hooks
+    forward_handle.remove()
+    backward_handle.remove()
 
     # Extract gradients and activations
     grads = gradients[0]
@@ -97,7 +105,7 @@ def generate_gradcam(image_path, model_name):
     heatmap = torch.mean(acts, dim=1).squeeze()
     heatmap = F.relu(heatmap)
     heatmap /= torch.max(heatmap)
-    heatmap = heatmap.detach().numpy()
+    heatmap = heatmap.cpu().numpy()
 
     # Overlay heatmap on the original image
     img = cv2.imread(image_path)
@@ -110,20 +118,18 @@ def generate_gradcam(image_path, model_name):
     result_path = f"gradcam_{uuid.uuid4().hex}.jpeg"
     cv2.imwrite(result_path, superimposed_img)
 
+    # Clean up to free memory
+    del model, image, input_tensor, output, grads, acts, heatmap
+    torch.cuda.empty_cache()  # if using GPU, else harmless
+
     return result_path
 
+
 def upload_to_cloudinary(file_path):
-    """
-    Upload the given file to Cloudinary and return the secure URL.
-    """
     upload_result = cloudinary.uploader.upload(file_path)
-    os.remove(file_path)  # Remove the local file after upload
+    os.remove(file_path)
     return upload_result["secure_url"]
 
-
 def generate_gradcam_and_upload(image_path, model_name):
-    """
-    Generate Grad-CAM heatmap and upload the result to Cloudinary.
-    """
     result_path = generate_gradcam(image_path, model_name)
     return upload_to_cloudinary(result_path)
