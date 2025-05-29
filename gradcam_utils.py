@@ -40,9 +40,8 @@ def get_model(model_name):
         weights = DenseNet121_Weights.DEFAULT
         model = models.densenet121(weights=weights)
         model.classifier = torch.nn.Sequential(
-            torch.nn.Linear(model.classifier.in_features, 1024),
-            torch.nn.ReLU(),
-            torch.nn.Linear(1024, 5)  # Multi-label
+            torch.nn.Dropout(0.3),
+            torch.nn.Linear(model.classifier.in_features, 5)
         )
     else:
         raise ValueError(f"Unknown model: {model_name}")
