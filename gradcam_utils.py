@@ -6,6 +6,8 @@ import cv2
 from PIL import Image
 import cloudinary.uploader
 import os
+from torchvision.models.resnet import ResNet50_Weights
+from torchvision.models.densenet import DenseNet121_Weights
 
 # Config Cloudinary
 cloudinary.config(
@@ -31,11 +33,17 @@ transform = transforms.Compose([
 
 def get_model(model_name):
     if model_name == "resnet50_v1" or model_name == "resnet50_v2":
-        model = models.resnet50(pretrained=False)
+        weights = ResNet50_Weights.DEFAULT
+        model = models.resnet50(weights=weights)
         model.fc = torch.nn.Linear(model.fc.in_features, 2)  # Binary classification
     elif model_name == "densenet121":
-        model = models.densenet121(pretrained=False)
-        model.classifier = torch.nn.Linear(model.classifier.in_features, 5)  # Multi-label
+        weights = DenseNet121_Weights.DEFAULT
+        model = models.densenet121(weights=weights)
+        model.classifier = torch.nn.Sequential(
+            torch.nn.Linear(model.classifier.in_features, 1024),
+            torch.nn.ReLU(),
+            torch.nn.Linear(1024, 5)  # Multi-label
+        )
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
