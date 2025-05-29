@@ -8,6 +8,10 @@ from gradcam_utils import generate_gradcam_and_upload
 
 app = FastAPI()
 
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Grad-CAM API"}
+
 @app.post("/gradcam")
 async def gradcam_endpoint(
     image: UploadFile = File(...),
