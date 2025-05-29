@@ -1,3 +1,4 @@
+import onnxruntime
 import torch
 from torchvision import models, transforms
 import torch.nn.functional as F
@@ -122,4 +123,85 @@ def upload_to_cloudinary(file_path):
 
 def generate_gradcam_and_upload(image_path, model_name):
     result_path = generate_gradcam(image_path, model_name)
+    return upload_to_cloudinary(result_path)
+
+# --- Phần ApproxCAM với ONNX Runtime ---
+
+ONNX_SESSIONS = {}
+
+def get_onnx_session(model_name):
+    if model_name not in ONNX_SESSIONS:
+        model_path = {
+            "resnet50_v1": "models/resnet50_v1.onnx",
+            "resnet50_v2": "models/resnet50_v2.onnx",
+            "densenet121": "models/densenet121.onnx",
+        }.get(model_name)
+        if model_path is None:
+            raise ValueError(f"Unknown model name for ONNX: {model_name}")
+        ONNX_SESSIONS[model_name] = onnxruntime.InferenceSession(model_path)
+    return ONNX_SESSIONS[model_name]
+
+def preprocess_image_onnx(image_path):
+    image = Image.open(image_path).convert("RGB")
+    img_tensor = transform(image).unsqueeze(0)  # (1, 3, 160, 160)
+    return img_tensor.numpy()
+
+def generate_approxcam_onnx(image_path, model_name, target_class_idx=None):
+    """
+    Generate ApproxCAM heatmap using ONNX Runtime for faster CPU inference and no backward pass.
+    """
+    # Preprocess input
+    input_tensor = preprocess_image_onnx(image_path)  # numpy float32 tensor (1,3,160,160)
+    
+    # Load ONNX model session từ cache
+    sess = get_onnx_session(model_name)
+    
+    # Get input/output names
+    input_name = sess.get_inputs()[0].name
+    
+    # Run forward pass
+    outputs = sess.run(None, {input_name: input_tensor})
+    logits = outputs[0]  # assuming output shape (1, num_classes)
+    
+    if target_class_idx is None:
+        target_class_idx = np.argmax(logits)
+    
+    # Kiểm tra có output thứ 2 chứa feature maps không
+    if len(outputs) < 2:
+        raise RuntimeError("ONNX model phải export thêm feature maps của last conv layer để tính ApproxCAM")
+    
+    feature_maps = outputs[1]  # numpy array shape (1, C, H, W)
+    
+    # Lấy logits class target
+    class_score = logits[0, target_class_idx]
+    
+    # Tính weights theo ApproxCAM: weight_k = score * mean(feature_map_k)
+    weights = class_score * feature_maps.mean(axis=(2, 3))  # shape (1, C)
+    
+    # Tính heatmap
+    weighted_maps = weights[:, :, None, None] * feature_maps  # broadcast multiply
+    cam = weighted_maps.sum(axis=1).squeeze()  # shape (H, W)
+    
+    # ReLU và chuẩn hóa heatmap
+    cam = np.maximum(cam, 0)
+    cam /= cam.max() + 1e-6
+    
+    # Đọc ảnh gốc, resize heatmap về kích thước ảnh
+    img = cv2.imread(image_path)
+    heatmap = cv2.resize(cam, (img.shape[1], img.shape[0]))
+    heatmap = np.uint8(255 * heatmap)
+    heatmap_color = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    superimposed_img = cv2.addWeighted(img, 0.6, heatmap_color, 0.4, 0)
+    
+    result_path = f"approxcam_{uuid.uuid4().hex}.jpeg"
+    cv2.imwrite(result_path, superimposed_img)
+    
+    # Dọn dẹp bộ nhớ
+    del input_tensor, outputs, logits, feature_maps, weighted_maps, cam
+    gc.collect()
+    
+    return result_path
+
+def generate_approxcam_and_upload(image_path, model_name):
+    result_path = generate_approxcam_onnx(image_path, model_name)
     return upload_to_cloudinary(result_path)
