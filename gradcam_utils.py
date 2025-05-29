@@ -27,7 +27,7 @@ MODEL_PATHS = {
 
 # Image preprocessing
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((160, 160)),
     transforms.ToTensor(),
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
@@ -56,71 +56,61 @@ def get_model(model_name):
 
 def generate_gradcam(image_path, model_name):
     """
-    Generate Grad-CAM heatmap for the given image and model.
+    Generate Grad-CAM heatmap for the given image and model (optimized for CPU).
     """
-    model = get_model(model_name)
+    device = torch.device("cpu")
+    model = get_model(model_name).to(device)
+    model.eval()
+
     target_layer = model.layer4[-1] if "resnet" in model_name else model.features[-1]
 
-    # Load and preprocess the image
     image = Image.open(image_path).convert("RGB")
-    input_tensor = transform(image).unsqueeze(0)
+    input_tensor = transform(image).unsqueeze(0).to(device)
+    input_tensor.requires_grad = True
 
     gradients = []
     activations = []
 
-    # Define hooks
     def backward_hook(module, grad_input, grad_output):
-        gradients.append(grad_output[0].detach())
+        gradients.append(grad_output[0])
 
     def forward_hook(module, input, output):
-        activations.append(output.detach())
+        activations.append(output)
 
-    # Register hooks
-    forward_handle = target_layer.register_forward_hook(forward_hook)
-    backward_handle = target_layer.register_backward_hook(backward_hook)
+    target_layer.register_forward_hook(forward_hook)
+    target_layer.register_backward_hook(backward_hook)
 
-    # Forward pass (no torch.no_grad() here!)
     output = model(input_tensor)
     class_idx = output.argmax(dim=1).item()
 
-    # Backward pass
     model.zero_grad()
     class_score = output[0, class_idx]
     class_score.backward()
 
-    # Clean up hooks
-    forward_handle.remove()
-    backward_handle.remove()
-
-    # Extract gradients and activations
     grads = gradients[0]
     acts = activations[0]
 
-    # Compute pooled gradients
     pooled_grads = torch.mean(grads, dim=[0, 2, 3])
     for i in range(acts.shape[1]):
         acts[:, i, :, :] *= pooled_grads[i]
 
-    # Generate heatmap
     heatmap = torch.mean(acts, dim=1).squeeze()
     heatmap = F.relu(heatmap)
     heatmap /= torch.max(heatmap)
-    heatmap = heatmap.cpu().numpy()
+    heatmap = heatmap.detach().cpu().numpy()
 
-    # Overlay heatmap on the original image
     img = cv2.imread(image_path)
     heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
     heatmap = np.uint8(255 * heatmap)
     heatmap_color = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
     superimposed_img = cv2.addWeighted(img, 0.6, heatmap_color, 0.4, 0)
 
-    # Save the result locally
     result_path = f"gradcam_{uuid.uuid4().hex}.jpeg"
     cv2.imwrite(result_path, superimposed_img)
 
-    # Clean up to free memory
-    del model, image, input_tensor, output, grads, acts, heatmap
-    torch.cuda.empty_cache()  # if using GPU, else harmless
+    # Clean up memory
+    del model, input_tensor, grads, acts, heatmap
+    gc.collect()
 
     return result_path
 
