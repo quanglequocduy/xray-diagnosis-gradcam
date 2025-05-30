@@ -5,7 +5,7 @@ import uuid
 import os
 
 from gradcam_utils import generate_gradcam_and_upload
-from gradcam_utils import generate_approxcam_and_upload
+from approxcam_utils import generate_approxcam_and_upload
 
 app = FastAPI()
 
