@@ -7,6 +7,7 @@ from PIL import Image
 import cloudinary.uploader
 import os
 from torchvision import transforms
+from torchvision import models
 
 # Cloudinary config
 cloudinary.config(
