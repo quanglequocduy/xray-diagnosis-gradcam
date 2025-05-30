@@ -31,9 +31,24 @@ def get_pytorch_model(model_name):
         if model_path is None:
             raise ValueError(f"Unknown model name for PyTorch: {model_name}")
         
-        # Load mô hình từ file .pth
-        model = torch.load(model_path, map_location="cpu")
-        model.eval()
+        # Khởi tạo mô hình
+        if model_name == "densenet121":
+            model = models.densenet121(weights=None)
+            num_ftrs = model.classifier.in_features
+            model.classifier = torch.nn.Sequential(
+                torch.nn.Dropout(0.3),
+                torch.nn.Linear(num_ftrs, 5)  # Số lớp đầu ra
+            )
+        elif model_name == "resnet50_v1" or model_name == "resnet50_v2":
+            model = models.resnet50(weights=None)
+            model.fc = torch.nn.Linear(model.fc.in_features, 5)  # Số lớp đầu ra
+        else:
+            raise ValueError(f"Unsupported model name: {model_name}")
+
+        # Tải state_dict vào mô hình
+        state_dict = torch.load(model_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+        model.eval()  # Đặt mô hình ở chế độ đánh giá
         MODELS_CACHE[model_name] = model
     return MODELS_CACHE[model_name]
 
